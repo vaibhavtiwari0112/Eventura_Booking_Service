@@ -45,6 +45,7 @@ jobs:
         run: |
           echo "Building Booking Service Docker image..."
           docker buildx build . \
+            --build-arg SERVER_PORT="8082" \
             --build-arg JDBC_DATABASE_URL="${{ secrets.JDBC_DATABASE_URL }}" \
             --build-arg JDBC_DATABASE_USERNAME="${{ secrets.JDBC_DATABASE_USERNAME }}" \
             --build-arg JDBC_DATABASE_PASSWORD="${{ secrets.JDBC_DATABASE_PASSWORD }}" \
@@ -53,6 +54,8 @@ jobs:
             --build-arg RABBITMQ_URL="${{ secrets.RABBITMQ_URL }}" \
             --build-arg SEAT_LOCK_TTL="${{ secrets.SEAT_LOCK_TTL }}" \
             --build-arg PENDING_TIMEOUT="${{ secrets.PENDING_TIMEOUT }}" \
+            --build-arg SHOW_SERVICE_URL="${{ secrets.SHOW_SERVICE_URL }}" \
+            --build-arg CATALOG_SERVICE_URL="${{ secrets.CATALOG_SERVICE_URL }}" \
             -t "${{ secrets.DOCKER_USERNAME }}/booking-service:latest" \
             --load
 

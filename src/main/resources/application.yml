@@ -59,3 +59,9 @@ management:
   endpoint:
     prometheus:
       enabled: true
+
+services:
+  show:
+    base-url: ${SHOW_SERVICE_URL:http://localhost:8084}
+  catalog:
+    base-url: ${CATALOG_SERVICE_URL:http://localhost:8083}
