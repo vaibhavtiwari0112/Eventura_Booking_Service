@@ -1,0 +1,41 @@
+# ---- Build Stage ----
+FROM maven:3.9.9-eclipse-temurin-17 AS build
+WORKDIR /workspace
+
+COPY pom.xml mvnw ./
+COPY .mvn .mvn
+RUN mvn -B -f pom.xml -ntp dependency:go-offline
+
+COPY src ./src
+RUN mvn -B clean package -DskipTests
+
+# ---- Runtime Stage ----
+FROM eclipse-temurin:17-jre-jammy
+WORKDIR /app
+
+# Build args
+ARG SERVER_PORT=8082
+ARG JDBC_DATABASE_URL
+ARG JDBC_DATABASE_USERNAME
+ARG JDBC_DATABASE_PASSWORD
+ARG REDIS_URL
+ARG KAFKA_BOOTSTRAP
+ARG RABBITMQ_URL
+ARG SEAT_LOCK_TTL
+ARG PENDING_TIMEOUT
+
+# Bake into image
+ENV SERVER_PORT=$SERVER_PORT \
+    JDBC_DATABASE_URL=$JDBC_DATABASE_URL \
+    JDBC_DATABASE_USERNAME=$JDBC_DATABASE_USERNAME \
+    JDBC_DATABASE_PASSWORD=$JDBC_DATABASE_PASSWORD \
+    REDIS_URL=$REDIS_URL \
+    KAFKA_BOOTSTRAP=$KAFKA_BOOTSTRAP \
+    RABBITMQ_URL=$RABBITMQ_URL \
+    EVENTURA_BOOKING_SEAT_LOCK_TTL_SECONDS=$SEAT_LOCK_TTL \
+    EVENTURA_BOOKING_PENDING_TIMEOUT_SECONDS=$PENDING_TIMEOUT
+
+COPY --from=build /workspace/target/*.jar app.jar
+
+EXPOSE ${SERVER_PORT}
+ENTRYPOINT ["java","-jar","/app/app.jar"]

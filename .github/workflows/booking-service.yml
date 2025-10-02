@@ -1,0 +1,60 @@
+name: Build and Push Booking Service
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Cache Maven packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-m2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Build JAR
+        run: mvn clean package -DskipTests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          echo "Building Booking Service Docker image..."
+          docker buildx build . \
+            --build-arg JDBC_DATABASE_URL="${{ secrets.JDBC_DATABASE_URL }}" \
+            --build-arg JDBC_DATABASE_USERNAME="${{ secrets.JDBC_DATABASE_USERNAME }}" \
+            --build-arg JDBC_DATABASE_PASSWORD="${{ secrets.JDBC_DATABASE_PASSWORD }}" \
+            --build-arg REDIS_URL="${{ secrets.REDIS_URL }}" \
+            --build-arg KAFKA_BOOTSTRAP="${{ secrets.KAFKA_BOOTSTRAP }}" \
+            --build-arg RABBITMQ_URL="${{ secrets.RABBITMQ_URL }}" \
+            --build-arg SEAT_LOCK_TTL="${{ secrets.SEAT_LOCK_TTL }}" \
+            --build-arg PENDING_TIMEOUT="${{ secrets.PENDING_TIMEOUT }}" \
+            -t "${{ secrets.DOCKER_USERNAME }}/booking-service:latest" \
+            --load
+
+      - name: Push Docker image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/booking-service:latest

@@ -1,0 +1,61 @@
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  application:
+    name: eventura-booking
+
+  data:
+    redis:
+      url: ${REDIS_URL:redis://default:password@localhost:6379}
+
+  datasource:
+    url: ${JDBC_DATABASE_URL:jdbc:postgresql://localhost:5432/neondb}
+    username: ${JDBC_DATABASE_USERNAME:neondb_owner}
+    password: ${JDBC_DATABASE_PASSWORD:password}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update   # ✅ for dev; in prod use validate/none
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: booking-service-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: '*'
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+  rabbitmq:
+    addresses: ${RABBITMQ_URL:amqp://guest:guest@localhost:5672/}
+
+rabbitmq:
+  exchange: booking.exchange
+  booking:
+    routing-key: booking.created
+  notification:
+    routing-key: notification.event
+
+eventura:
+  booking:
+    seat-lock-ttl-seconds: ${EVENTURA_BOOKING_SEAT_LOCK_TTL_SECONDS:120}
+    pending-timeout-seconds: ${EVENTURA_BOOKING_PENDING_TIMEOUT_SECONDS:150}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    prometheus:
+      enabled: true
