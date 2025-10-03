@@ -17,7 +17,7 @@ public class BookingCleanupScheduler {
         this.pendingTimeoutSeconds = Integer.parseInt(env.getProperty("eventura.booking.pending-timeout-seconds", "150"));
     }
 
-    @Scheduled(fixedDelayString = "3000")
+    @Scheduled(fixedDelayString = "86400000")
     public void cleanup() {
         OffsetDateTime cutoff = OffsetDateTime.now().minusSeconds(pendingTimeoutSeconds);
         bookingManageService.cancelStalePendingBookings(cutoff);
