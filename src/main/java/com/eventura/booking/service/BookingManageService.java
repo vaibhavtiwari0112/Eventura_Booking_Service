@@ -43,7 +43,7 @@ public class BookingManageService {
                                 MeterRegistry meterRegistry,
                                 RestTemplate restTemplate,
                                 RedisTemplate<String, Object> redisTemplate,
-                                @Value("${show.service.url:http://localhost:8084}") String showServiceUrl) {
+                                @Value("${services.show.base-url:https://show-service.onrender.com}") String showServiceUrl) {
         this.seatLockService = seatLockService;
         this.bookingRepository = bookingRepository;
         this.meterRegistry = meterRegistry;
@@ -52,10 +52,10 @@ public class BookingManageService {
         this.showServiceUrl = showServiceUrl;
     }
 
-    @Value("${services.show.base-url:http://localhost:8084}")
+    @Value("${services.show.base-url:https://show-service.onrender.com}")
     private String showServiceBaseUrl;
 
-    @Value("${services.catalog.base-url:http://localhost:8083}")
+    @Value("${services.catalog.base-url:https://catalog-service-wvzz.onrender.com}")
     private String catalogServiceBaseUrl;
 
     private String redisKey(UUID showId) {
