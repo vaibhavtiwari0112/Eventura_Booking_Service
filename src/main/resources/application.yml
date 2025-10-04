@@ -62,6 +62,6 @@ management:
 
 services:
   show:
-    base-url: ${SHOW_SERVICE_URL:https://show-service.onrender.com}
+    base-url: https://show-service.onrender.com
   catalog:
-    base-url: ${CATALOG_SERVICE_URL:https://catalog-service-wvzz.onrender.com}
+    base-url: https://catalog-service-wvzz.onrender.com
