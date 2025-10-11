@@ -6,6 +6,7 @@ import com.eventura.booking.domain.BookingStatus;
 import com.eventura.booking.dto.*;
 import com.eventura.booking.lock.SeatLockService;
 import com.eventura.booking.mapper.UserBookingMapper;
+import com.eventura.booking.rabbitMQ.RabbitProducerService;
 import com.eventura.booking.repository.BookingRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,13 +36,14 @@ public class BookingManageService {
     private final MeterRegistry meterRegistry;
     private final RestTemplate restTemplate;
     private final RedisTemplate<String, Object> redisTemplate;
-
+    private final RabbitProducerService rabbitProducer;
     private final String showServiceUrl;
 
     public BookingManageService(SeatLockService seatLockService,
                                 BookingRepository bookingRepository,
                                 MeterRegistry meterRegistry,
                                 RestTemplate restTemplate,
+                                RabbitProducerService rabbitProducer,
                                 RedisTemplate<String, Object> redisTemplate,
                                 @Value("${services.show.base-url:https://show-service.onrender.com}") String showServiceUrl) {
         this.seatLockService = seatLockService;
@@ -50,6 +52,7 @@ public class BookingManageService {
         this.restTemplate = restTemplate;
         this.redisTemplate = redisTemplate;
         this.showServiceUrl = showServiceUrl;
+        this.rabbitProducer = rabbitProducer;
     }
 
     @Value("${services.show.base-url:https://show-service.onrender.com}")
@@ -122,12 +125,19 @@ public class BookingManageService {
                     .flatMap(item -> item.getSeatIds().stream())
                     .toList();
 
-            // Confirm in ShowService + Redis
             updateSeatsInShowService("/shows/confirm-seats", b.getShowId(), hallId, seats);
-            // updateRedis(b.getShowId(), seats, "confirm");
-
             meterRegistry.counter("eventura.bookings.confirmed").increment();
+
             log.info("✅ Booking confirmed | bookingId={} | seats={}", b.getId(), seats);
+
+            // ✅ Send notification event to RabbitMQ
+            try {
+                NotificationEvent event = buildNotificationEvent(b, "BOOKING_CONFIRMED");
+                rabbitProducer.publishNotification(event);
+                log.info("📤 RabbitMQ notification event sent for booking confirmation");
+            } catch (Exception e) {
+                log.error("❌ Failed to send RabbitMQ confirmation event: {}", e.getMessage(), e);
+            }
 
             return b;
         }).orElseThrow(() -> new IllegalArgumentException("Booking not found with id " + bookingId));
@@ -144,15 +154,102 @@ public class BookingManageService {
                     .flatMap(item -> item.getSeatIds().stream())
                     .toList();
 
-            // Release in ShowService + Redis
             updateSeatsInShowService("/shows/release-seats", b.getShowId(), hallId, seats);
-            // updateRedis(b.getShowId(), seats, "release");
-
             meterRegistry.counter("eventura.bookings.cancelled").increment();
+
             log.info("❌ Booking cancelled | bookingId={} | reason={}", b.getId(), reason);
+
+            // ✅ Send notification event to RabbitMQ
+            try {
+                NotificationEvent event = buildNotificationEvent(b, "BOOKING_CANCELLED");
+                event.setCancelReason(reason);
+                rabbitProducer.publishNotification(event);
+                log.info("📤 RabbitMQ notification event sent for booking cancellation");
+            } catch (Exception e) {
+                log.error("❌ Failed to send RabbitMQ cancellation event: {}", e.getMessage(), e);
+            }
 
             return b;
         }).orElseThrow(() -> new IllegalArgumentException("Booking not found with id " + bookingId));
+    }
+
+    // ---------------- Helper: Build Notification Event ----------------
+    private NotificationEvent buildNotificationEvent(Booking booking, String eventType) {
+        // Fetch show once to avoid multiple REST calls
+        ShowDto show = fetchShowDetails(booking.getShowId());
+
+        OffsetDateTime showTime = null;
+        String movieTitle = null;
+
+        if (show != null) {
+            showTime = show.getStartTime();
+            movieTitle = fetchMovieTitle(show.getMovieId());
+        }
+
+        String hallName = fetchHallName(booking.getHallId());
+
+        // Build notification event
+        NotificationEvent event = new NotificationEvent();
+        event.setEventType(eventType);
+        event.setBookingId(booking.getId());
+        event.setUserId(booking.getUserId());
+        event.setShowId(booking.getShowId());
+        event.setSeats(
+                booking.getItems().stream()
+                        .flatMap(item -> item.getSeatIds().stream())
+                        .toList() // cleaner if using Java 16+
+        );
+        event.setTotalAmount(booking.getTotalAmount());
+        event.setShowTime(showTime);
+        event.setMovieTitle(movieTitle);
+        event.setHallName(hallName);
+        event.setUserEmail(fetchUserEmail(booking.getUserId()));
+        event.setUsername(fetchUsername(booking.getUserId()));
+
+        return event;
+    }
+
+    private String fetchUserEmail(UUID userId) {
+        return "vaibhav45tiwari@gmail.com";
+    }
+
+    private String fetchUsername(UUID userId) {
+        return "Vaibhav";
+    }
+
+    private String fetchHallName(UUID hallId) {
+        if (hallId == null) return null;
+        try {
+            String url = catalogServiceBaseUrl + "/catalog/halls/" + hallId;
+            HallDto hall = restTemplate.getForObject(url, HallDto.class);
+            return hall != null ? hall.getName() : null;
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to fetch hall name for hallId={}: {}", hallId, e.getMessage());
+            return null;
+        }
+    }
+
+    private String fetchMovieTitle(UUID movieId) {
+        if (movieId == null) return null;
+        try {
+            String url = catalogServiceBaseUrl + "/catalog/movies/" + movieId;
+            MovieDto movie = restTemplate.getForObject(url, MovieDto.class);
+            return movie != null ? movie.getTitle() : null;
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to fetch movie title for movieId={}: {}", movieId, e.getMessage());
+            return null;
+        }
+    }
+
+    private ShowDto fetchShowDetails(UUID showId) {
+        if (showId == null) return null;
+        try {
+            String url = showServiceBaseUrl + "/shows/" + showId;
+            return restTemplate.getForObject(url, ShowDto.class);
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to fetch show details for showId={}: {}", showId, e.getMessage());
+            return null;
+        }
     }
 
     // ---------------- Payment Success ----------------
@@ -270,7 +367,11 @@ public class BookingManageService {
     // ---------------- Misc ----------------
     public void notifySeatStatusChange(UUID showId, UUID hallId, List<String> seatIds, String status) {
         try {
-            String url = showServiceUrl + "/seats/status";
+            String path = "confirm-seats";
+            if(status.equals("AVAILABLE")){
+                path = "release-seats";
+            }
+            String url = showServiceUrl + "/shows/" + path;
             SeatStatusUpdateRequest payload = new SeatStatusUpdateRequest(showId, hallId, seatIds, status);
             restTemplate.postForEntity(url, payload, Void.class);
             log.info("✅ Seat status updated in ShowService: show={} hall={} seats={} status={}",

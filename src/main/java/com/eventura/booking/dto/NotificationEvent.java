@@ -1,15 +1,21 @@
 package com.eventura.booking.dto;
+
+import java.io.Serializable;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
-public class NotificationEvent {
+public class NotificationEvent implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
     private UUID eventId;
     private String eventType; // BOOKING_CONFIRMED / BOOKING_CANCELLED
     private OffsetDateTime timestamp;
     private UUID bookingId;
     private UUID userId;
     private String userEmail;
+    private String username;
     private UUID showId;
     private UUID hallId;
     private String movieTitle;
@@ -18,17 +24,20 @@ public class NotificationEvent {
     private List<String> seats;
     private double amount;
 
-    public String getUsername() {
-        return username;
+    private String cancelReason;
+
+    // -------- Constructors --------
+    public NotificationEvent() {
+        this.eventId = UUID.randomUUID();
+        this.timestamp = OffsetDateTime.now();
     }
 
-    public void setUsername(String username) {
-        this.username = username;
+    public NotificationEvent(String eventType) {
+        this();
+        this.eventType = eventType;
     }
 
-    private String username;
-
-    // Getters and setters
+    // -------- Getters & Setters --------
     public UUID getEventId() { return eventId; }
     public void setEventId(UUID eventId) { this.eventId = eventId; }
 
@@ -46,6 +55,9 @@ public class NotificationEvent {
 
     public String getUserEmail() { return userEmail; }
     public void setUserEmail(String userEmail) { this.userEmail = userEmail; }
+
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
 
     public UUID getShowId() { return showId; }
     public void setShowId(UUID showId) { this.showId = showId; }
@@ -67,4 +79,31 @@ public class NotificationEvent {
 
     public double getAmount() { return amount; }
     public void setAmount(double amount) { this.amount = amount; }
+
+    public String getCancelReason() { return cancelReason; }
+    public void setCancelReason(String cancelReason) { this.cancelReason = cancelReason; }
+
+    // -------- Utility --------
+    @Override
+    public String toString() {
+        return "NotificationEvent{" +
+                "eventId=" + eventId +
+                ", eventType='" + eventType + '\'' +
+                ", bookingId=" + bookingId +
+                ", userEmail='" + userEmail + '\'' +
+                ", movieTitle='" + movieTitle + '\'' +
+                ", showTime=" + showTime +
+                ", seats=" + seats +
+                ", amount=" + amount +
+                ", cancelReason='" + cancelReason + '\'' +
+                '}';
+    }
+
+    public void setTotalAmount(double totalAmount) {
+        this.amount = totalAmount;
+    }
+
+    public double getTotalAmount() {
+        return amount;
+    }
 }
