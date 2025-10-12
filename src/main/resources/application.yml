@@ -7,13 +7,14 @@ spring:
 
   data:
     redis:
-      url: ${REDIS_URL:redis://default:password@localhost:6379}
+      url: ${REDIS_URL:redis://default:EFw4lxHrGHaipf9H96w4DO37LKNtCSiT@redis-15991.c264.ap-south-1-1.ec2.redns.redis-cloud.com:15991}
 
   datasource:
-    url: ${JDBC_DATABASE_URL:jdbc:postgresql://localhost:5432/neondb}
+    url: ${JDBC_DATABASE_URL:jdbc:postgresql://ep-twilight-scene-adaieni4-pooler.c-2.us-east-1.aws.neon.tech:5432/neondb?sslmode=require&channel_binding=require}
     username: ${JDBC_DATABASE_USERNAME:neondb_owner}
-    password: ${JDBC_DATABASE_PASSWORD:password}
+    password: ${JDBC_DATABASE_PASSWORD:npg_8mg7TPQqFrAy}
     driver-class-name: org.postgresql.Driver
+
 
   jpa:
     hibernate:
@@ -37,7 +38,7 @@ spring:
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
   rabbitmq:
-    addresses: ${RABBITMQ_URL:amqp://guest:guest@localhost:5672/}
+    addresses: amqps://tdoxvmdr:XwrZ9FOHTabNTH3qTTgBHALqE2sReRRW@puffin.rmq2.cloudamqp.com/tdoxvmdr
 
 rabbitmq:
   exchange: booking.exchange
@@ -62,6 +63,6 @@ management:
 
 services:
   show:
-    base-url: https://show-service.onrender.com
+    base-url: http://localhost:8084
   catalog:
-    base-url: https://catalog-service-wvzz.onrender.com
+    base-url: http://localhost:8083
