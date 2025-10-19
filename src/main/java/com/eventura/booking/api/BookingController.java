@@ -197,4 +197,34 @@ public class BookingController {
             ));
         }
     }
+
+    @PostMapping("/{id}/unlock")
+    public ResponseEntity<?> unlockBooking(
+            @PathVariable UUID id,
+            @RequestParam UUID hallId,
+            @RequestParam(required = false) String reason
+    ) {
+        try {
+            Booking booking = bookingManageService.unlockAndCancelBooking(
+                    id, hallId, reason != null ? reason : "payment_failed_or_abandoned"
+            );
+
+            // 🔗 Update Show Service: mark seats back to AVAILABLE
+            bookingManageService.notifySeatStatusChange(
+                    booking.getShowId(),
+                    booking.getHallId(),
+                    booking.getItems().stream()
+                            .flatMap(item -> item.getSeatIds().stream())
+                            .toList(),
+                    "AVAILABLE"
+            );
+
+            return ResponseEntity.ok(ApiResponse.success("Booking unlocked and cancelled", booking.getId()));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.notFound().build();
+        } catch (Exception ex) {
+            return ResponseEntity.status(500)
+                    .body(ApiResponse.failure("Error unlocking booking: " + ex.getMessage()));
+        }
+    }
 }

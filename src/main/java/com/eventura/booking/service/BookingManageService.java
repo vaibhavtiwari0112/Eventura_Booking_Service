@@ -382,10 +382,16 @@ public class BookingManageService {
     }
 
     public List<UserBookingResponse> getBookingsForUser(UUID userId) {
-        log.info("Fetching bookings for user: {}", userId);
-        List<Booking> bookings = bookingRepository.findByUserId(userId);
-        log.debug("Found {} bookings for user {}", bookings.size(), userId);
-        return bookings.stream().map(this::enrichAndMap).collect(Collectors.toList());
+        log.info("Fetching PENDING and CONFIRMED bookings for user: {}", userId);
+
+        List<BookingStatus> statuses = List.of(BookingStatus.PENDING, BookingStatus.CONFIRMED);
+        List<Booking> bookings = bookingRepository.findByUserIdAndStatusIn(userId, statuses);
+
+        log.debug("Found {} PENDING/CONFIRMED bookings for user {}", bookings.size(), userId);
+
+        return bookings.stream()
+                .map(this::enrichAndMap)
+                .collect(Collectors.toList());
     }
 
     private UserBookingResponse enrichAndMap(Booking booking) {
@@ -465,5 +471,45 @@ public class BookingManageService {
         return bookingRepository.findById(bookingId)
                 .map(Booking::getStatus)
                 .orElseThrow(() -> new IllegalArgumentException("Booking not found with id " + bookingId));
+    }
+
+    @Transactional
+    public Booking unlockAndCancelBooking(UUID bookingId, UUID hallId, String reason) {
+        log.info("🔓 Unlocking seats and cancelling booking | bookingId={} | hallId={} | reason={}",
+                bookingId, hallId, reason);
+
+        return bookingRepository.findById(bookingId).map(b -> {
+            if (b.getStatus() == BookingStatus.CONFIRMED) {
+                throw new IllegalStateException("Cannot unlock confirmed booking");
+            }
+
+            // Mark as cancelled
+            b.setStatus(BookingStatus.CANCELLED);
+            bookingRepository.save(b);
+
+            // Extract seat IDs
+            List<String> seats = b.getItems().stream()
+                    .flatMap(item -> item.getSeatIds().stream())
+                    .toList();
+
+            // Release locks in both seatLockService and ShowService
+            seatLockService.releaseLocks(b.getShowId().toString(), seats, b.getUserId().toString());
+            updateSeatsInShowService("/shows/release-seats", b.getShowId(), hallId, seats);
+            updateRedis(b.getShowId(), seats, "release");
+
+            meterRegistry.counter("eventura.bookings.unlocked_cancelled").increment();
+
+            log.info("♻️ Seats unlocked and booking cancelled | bookingId={} | seats={}", b.getId(), seats);
+
+            try {
+                NotificationEvent event = buildNotificationEvent(b, "BOOKING_UNLOCKED_CANCELLED");
+                event.setCancelReason(reason);
+                rabbitProducer.publishNotification(event);
+            } catch (Exception e) {
+                log.error("❌ Failed to send RabbitMQ unlock-cancel event: {}", e.getMessage(), e);
+            }
+
+            return b;
+        }).orElseThrow(() -> new IllegalArgumentException("Booking not found with id " + bookingId));
     }
 }
