@@ -63,6 +63,6 @@ management:
 
 services:
   show:
-    base-url: http://localhost:8084
+    base-url: https://show-service.onrender.com
   catalog:
-    base-url: http://localhost:8083
+    base-url: https://catalog-service-wvzz.onrender.com
