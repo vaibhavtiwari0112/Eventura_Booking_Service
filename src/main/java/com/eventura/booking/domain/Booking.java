@@ -10,6 +10,12 @@ import java.util.UUID;
 @Table(name = "bookings")
 public class Booking {
 
+    // ✅ Explicit column name — avoids PostgreSQL reserved word collision
+    //    and makes the schema migration unambiguous
+    @Version
+    @Column(name = "booking_version", nullable = false)
+    private Long version;
+
     @Id
     @Column(nullable = false, updatable = false)
     private UUID id;
@@ -17,14 +23,7 @@ public class Booking {
     @Column(name = "user_id", nullable = false)
     private UUID userId;
 
-    public UUID getHallId() {
-        return hallId;
-    }
-
-    public void setHallId(UUID hallId) {
-        this.hallId = hallId;
-    }
-
+    @Column(name = "hall_id")
     private UUID hallId;
 
     @Column(name = "show_id", nullable = false)
@@ -37,12 +36,15 @@ public class Booking {
     @Column(name = "total_amount", nullable = false)
     private double totalAmount = 0.0;
 
-    @Column(name = "created_at", nullable = false)
+    @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
 
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
 
+    // ✅ FetchType.EAGER — items must be loaded when Booking is loaded.
+    //    cancelBooking/confirmBooking read items inside the same transaction
+    //    that modifies status; LAZY here would cause the same LazyInit problem.
     @OneToMany(
             mappedBy = "booking",
             cascade = CascadeType.ALL,
@@ -54,12 +56,8 @@ public class Booking {
     // --- Lifecycle hooks ---
     @PrePersist
     public void prePersist() {
-        if (id == null) {
-            id = UUID.randomUUID();
-        }
-        if (createdAt == null) {
-            createdAt = OffsetDateTime.now();
-        }
+        if (id == null) id = UUID.randomUUID();
+        if (createdAt == null) createdAt = OffsetDateTime.now();
         updatedAt = OffsetDateTime.now();
     }
 
@@ -78,9 +76,14 @@ public class Booking {
     }
 
     // --- Utility methods ---
+
+    /**
+     * Always use this method to add items — it wires up both sides
+     * of the bidirectional relationship and keeps totalAmount in sync.
+     */
     public void addItem(BookingItem item) {
         if (item == null) return;
-        item.setBooking(this);
+        item.setBooking(this);          // ← wires the FK on BookingItem side
         this.items.add(item);
         this.totalAmount += item.getPrice();
     }
@@ -94,68 +97,40 @@ public class Booking {
     }
 
     // --- Getters & Setters ---
-    public UUID getId() {
-        return id;
-    }
+    public UUID getId() { return id; }
+    public void setId(UUID id) { this.id = id; }
 
-    public void setId(UUID id) {
-        this.id = id;
-    }
+    public UUID getUserId() { return userId; }
+    public void setUserId(UUID userId) { this.userId = userId; }
 
-    public UUID getUserId() {
-        return userId;
-    }
+    public UUID getShowId() { return showId; }
+    public void setShowId(UUID showId) { this.showId = showId; }
 
-    public void setUserId(UUID userId) {
-        this.userId = userId;
-    }
+    public UUID getHallId() { return hallId; }
+    public void setHallId(UUID hallId) { this.hallId = hallId; }
 
-    public UUID getShowId() {
-        return showId;
-    }
+    public BookingStatus getStatus() { return status; }
+    public void setStatus(BookingStatus status) { this.status = status; }
 
-    public void setShowId(UUID showId) {
-        this.showId = showId;
-    }
+    public double getTotalAmount() { return totalAmount; }
+    public void setTotalAmount(double totalAmount) { this.totalAmount = totalAmount; }
 
-    public BookingStatus getStatus() {
-        return status;
-    }
+    public OffsetDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(OffsetDateTime createdAt) { this.createdAt = createdAt; }
 
-    public void setStatus(BookingStatus status) {
-        this.status = status;
-    }
+    public OffsetDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(OffsetDateTime updatedAt) { this.updatedAt = updatedAt; }
 
-    public double getTotalAmount() {
-        return totalAmount;
-    }
+    public List<BookingItem> getItems() { return items; }
 
-    public void setTotalAmount(double totalAmount) {
-        this.totalAmount = totalAmount;
-    }
-
-    public OffsetDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(OffsetDateTime createdAt) {
-        this.createdAt = createdAt;
-    }
-
-    public OffsetDateTime getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(OffsetDateTime updatedAt) {
-        this.updatedAt = updatedAt;
-    }
-
-    public List<BookingItem> getItems() {
-        return items;
-    }
-
+    /**
+     * Use setItems only for bulk replacement (e.g. deserialization).
+     * Prefer addItem() for normal use to keep totalAmount accurate.
+     */
     public void setItems(List<BookingItem> items) {
-        this.items = items;
-        this.totalAmount = items.stream().mapToDouble(BookingItem::getPrice).sum();
+        this.items = items == null ? new ArrayList<>() : items;
+        this.totalAmount = this.items.stream().mapToDouble(BookingItem::getPrice).sum();
     }
+
+    public Long getVersion() { return version; }
 }

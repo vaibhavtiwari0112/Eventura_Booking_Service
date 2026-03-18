@@ -88,89 +88,111 @@ public class BookingManageService {
     }
 
     // ---------------- Create Booking ----------------
+
     @Transactional
-    public Booking createBooking(UUID userId, UUID showId, List<String> seatIds, double totalAmount, UUID hallId) {
+    public Booking createBooking(UUID userId, UUID showId, List<String> seatIds,
+                                 double totalAmount, UUID hallId) {
         log.info("🎟️ Creating booking | userId={} | showId={} | hallId={} | requestedSeats={}",
                 userId, showId, hallId, seatIds);
 
-        // Step 1: Lock in ShowService (source of truth)
-        try {
-            updateSeatsInShowService("/shows/lock-seats", showId, hallId, seatIds);
-            //updateRedis(showId, seatIds, "lock");
-        } catch (Exception e) {
-            throw new IllegalStateException("❌ Failed to lock seats in ShowService", e);
+        // ✅ Step 1: Atomically lock seats in Redis FIRST (SETNX per seat)
+        // If ANY seat is already held by another user — fail immediately, no DB write
+        boolean redisLocked = seatLockService.tryLockSeats(
+                showId.toString(), seatIds, userId.toString());
+
+        if (!redisLocked) {
+            log.warn("⚠️ Seat lock failed in Redis | showId={} | seats={}", showId, seatIds);
+            throw new IllegalStateException(
+                    "Seats are already locked by another user: " + seatIds);
         }
 
-        // Step 2: Save booking in PENDING state
+        // ✅ Step 2: Lock in ShowService (persistent source of truth)
+        // If ShowService rejects — release the Redis lock we just acquired
+        try {
+            updateSeatsInShowService("/shows/lock-seats", showId, hallId, seatIds);
+        } catch (Exception e) {
+            // Rollback Redis lock so seats aren't stuck
+            seatLockService.releaseLocks(showId.toString(), seatIds, userId.toString());
+            log.error("❌ ShowService lock failed, Redis lock released | seats={}", seatIds);
+            throw new IllegalStateException("Failed to lock seats in ShowService", e);
+        }
+
+        // ✅ Step 3: Save booking in PENDING state
         Booking booking = new Booking(userId, showId, BookingStatus.PENDING);
         booking.setHallId(hallId);
         BookingItem bookingItem = new BookingItem(seatIds, totalAmount);
         booking.addItem(bookingItem);
         bookingRepository.save(booking);
 
+        // ✅ Step 4: Update Redis seat state (available → locked)
+        updateRedis(showId, seatIds, "lock");
+
         meterRegistry.counter("eventura.bookings.created").increment();
-        log.info("✅ Booking created | bookingId={} | totalAmount={}", booking.getId(), booking.getTotalAmount());
+        log.info("✅ Booking created | bookingId={} | totalAmount={}",
+                booking.getId(), booking.getTotalAmount());
 
         return booking;
     }
-
     // ---------------- Confirm Booking ----------------
+
     @Transactional
     public Booking confirmBooking(UUID bookingId, UUID hallId) {
         return bookingRepository.findById(bookingId).map(b -> {
+
+            // ✅ Guard: only PENDING bookings can be confirmed
+            if (b.getStatus() != BookingStatus.PENDING) {
+                throw new IllegalStateException(
+                        "Cannot confirm booking in status: " + b.getStatus());
+            }
+
             b.setStatus(BookingStatus.CONFIRMED);
             bookingRepository.save(b);
 
             List<String> seats = b.getItems().stream()
-                    .flatMap(item -> item.getSeatIds().stream())
-                    .toList();
+                    .flatMap(item -> item.getSeatIds().stream()).toList();
 
             updateSeatsInShowService("/shows/confirm-seats", b.getShowId(), hallId, seats);
             meterRegistry.counter("eventura.bookings.confirmed").increment();
 
-            log.info("✅ Booking confirmed | bookingId={} | seats={}", b.getId(), seats);
-
-            // ✅ Send notification event to RabbitMQ
             try {
-                NotificationEvent event = buildNotificationEvent(b, "BOOKING_CONFIRMED");
-                rabbitProducer.publishNotification(event);
-                log.info("📤 RabbitMQ notification event sent for booking confirmation");
+                rabbitProducer.publishNotification(buildNotificationEvent(b, "BOOKING_CONFIRMED"));
             } catch (Exception e) {
-                log.error("❌ Failed to send RabbitMQ confirmation event: {}", e.getMessage(), e);
+                log.error("❌ RabbitMQ notification failed: {}", e.getMessage(), e);
             }
 
             return b;
-        }).orElseThrow(() -> new IllegalArgumentException("Booking not found with id " + bookingId));
+        }).orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
     }
 
-    // ---------------- Cancel Booking ----------------
     @Transactional
     public Booking cancelBooking(UUID bookingId, UUID hallId, String reason) {
         return bookingRepository.findById(bookingId).map(b -> {
+
+            // ✅ Guard: already cancelled = idempotent no-op
+            if (b.getStatus() == BookingStatus.CANCELLED) {
+                log.warn("⚠️ Booking {} already cancelled, skipping", bookingId);
+                return b;
+            }
+
             b.setStatus(BookingStatus.CANCELLED);
-            bookingRepository.save(b);
+            bookingRepository.save(b); // @Version fires here
 
             List<String> seats = b.getItems().stream()
-                    .flatMap(item -> item.getSeatIds().stream())
-                    .toList();
+                    .flatMap(item -> item.getSeatIds().stream()).toList();
 
             updateSeatsInShowService("/shows/release-seats", b.getShowId(), hallId, seats);
             meterRegistry.counter("eventura.bookings.cancelled").increment();
 
-            log.info("❌ Booking cancelled | bookingId={} | reason={}", b.getId(), reason);
-
-            // ✅ Send notification event to RabbitMQ
             try {
                 NotificationEvent event = buildNotificationEvent(b, "BOOKING_CANCELLED");
                 event.setCancelReason(reason);
                 rabbitProducer.publishNotification(event);
-                log.info("📤 RabbitMQ notification event sent for booking cancellation");
             } catch (Exception e) {
-                log.error("❌ Failed to send RabbitMQ cancellation event: {}", e.getMessage(), e);
+                log.error("❌ RabbitMQ notification failed: {}", e.getMessage(), e);
             }
 
             return b;
-        }).orElseThrow(() -> new IllegalArgumentException("Booking not found with id " + bookingId));
+        }).orElseThrow(() -> new IllegalArgumentException("Booking not found: " + bookingId));
     }
 
     // ---------------- Helper: Build Notification Event ----------------
@@ -328,42 +350,33 @@ public class BookingManageService {
     }
 
     // ---------------- Helper: Redis Update ----------------
-    @SuppressWarnings("unchecked")
+
     private void updateRedis(UUID showId, List<String> seats, String action) {
-        String key = redisKey(showId);
-        HashOperations<String, String, Set<String>> ops = redisTemplate.opsForHash();
+        String baseKey = "booking:show:" + showId + ":seats";
+        String availableKey = baseKey + ":available";
+        String lockedKey    = baseKey + ":locked";
+        String bookedKey    = baseKey + ":booked";
 
-        Set<String> available = (Set<String>) ops.get(key, "available");
-        Set<String> locked = (Set<String>) ops.get(key, "locked");
-        Set<String> booked = (Set<String>) ops.get(key, "booked");
-
-        if (available == null) available = new HashSet<>();
-        if (locked == null) locked = new HashSet<>();
-        if (booked == null) booked = new HashSet<>();
-
+        // Each SADD/SREM is atomic — no read-modify-write window
         switch (action) {
             case "lock" -> {
-                available.removeAll(seats);
-                locked.addAll(seats);
-                log.info("🔒 Redis update: Locked seats={} for show={}", seats, showId);
+                redisTemplate.opsForSet().remove(availableKey, seats.toArray());
+                redisTemplate.opsForSet().add(lockedKey, seats.toArray());
+                log.info("🔒 Redis: locked seats={} show={}", seats, showId);
             }
             case "confirm" -> {
-                locked.removeAll(seats);
-                booked.addAll(seats);
-                log.info("✅ Redis update: Confirmed seats={} for show={}", seats, showId);
+                redisTemplate.opsForSet().remove(lockedKey, seats.toArray());
+                redisTemplate.opsForSet().add(bookedKey, seats.toArray());
+                log.info("✅ Redis: confirmed seats={} show={}", seats, showId);
             }
             case "release" -> {
-                locked.removeAll(seats);
-                available.addAll(seats);
-                log.info("♻️ Redis update: Released seats={} for show={}", seats, showId);
+                redisTemplate.opsForSet().remove(lockedKey, seats.toArray());
+                redisTemplate.opsForSet().remove(bookedKey, seats.toArray());
+                redisTemplate.opsForSet().add(availableKey, seats.toArray());
+                log.info("♻️ Redis: released seats={} show={}", seats, showId);
             }
         }
-
-        ops.put(key, "available", available);
-        ops.put(key, "locked", locked);
-        ops.put(key, "booked", booked);
     }
-
     // ---------------- Misc ----------------
     public void notifySeatStatusChange(UUID showId, UUID hallId, List<String> seatIds, String status) {
         try {

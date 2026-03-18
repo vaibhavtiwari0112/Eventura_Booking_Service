@@ -18,8 +18,11 @@ public class BookingItem {
     @JoinColumn(name = "booking_id", nullable = false)
     private Booking booking;
 
-    // store seat ids in a separate collection table (booking_item_seat_ids)
-    @ElementCollection
+    // ✅ FetchType.EAGER — critical fix.
+    // Default is LAZY, which causes Hibernate to attempt lazy initialization
+    // of seatIds during transaction flush in cancelBooking/confirmBooking,
+    // marking the transaction rollback-only before it can commit.
+    @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(
             name = "booking_item_seat_ids",
             joinColumns = @JoinColumn(name = "booking_item_id")
@@ -33,7 +36,6 @@ public class BookingItem {
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
-    // Ensures defaults are set before persisting
     @PrePersist
     public void prePersist() {
         if (id == null) {
@@ -47,13 +49,11 @@ public class BookingItem {
     // --- Constructors ---
     public BookingItem() {}
 
-    // Accept a list of seats
     public BookingItem(List<String> seatIds, double price) {
         this.seatIds = seatIds == null ? new ArrayList<>() : new ArrayList<>(seatIds);
         this.price = price;
     }
 
-    // Convenience constructor for a single seat (used by current service code)
     public BookingItem(String seatId, double price) {
         this.seatIds = new ArrayList<>();
         if (seatId != null) this.seatIds.add(seatId);
@@ -61,43 +61,20 @@ public class BookingItem {
     }
 
     // --- Getters & Setters ---
-    public UUID getId() {
-        return id;
-    }
+    public UUID getId() { return id; }
+    public void setId(UUID id) { this.id = id; }
 
-    public void setId(UUID id) {
-        this.id = id;
-    }
+    public Booking getBooking() { return booking; }
+    public void setBooking(Booking booking) { this.booking = booking; }
 
-    public Booking getBooking() {
-        return booking;
-    }
-
-    public void setBooking(Booking booking) {
-        this.booking = booking;
-    }
-
-    public List<String> getSeatIds() {
-        return seatIds;
-    }
-
+    public List<String> getSeatIds() { return seatIds; }
     public void setSeatIds(List<String> seatIds) {
         this.seatIds = seatIds == null ? new ArrayList<>() : new ArrayList<>(seatIds);
     }
 
-    public double getPrice() {
-        return price;
-    }
+    public double getPrice() { return price; }
+    public void setPrice(double price) { this.price = price; }
 
-    public void setPrice(double price) {
-        this.price = price;
-    }
-
-    public OffsetDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(OffsetDateTime createdAt) {
-        this.createdAt = createdAt;
-    }
+    public OffsetDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(OffsetDateTime createdAt) { this.createdAt = createdAt; }
 }

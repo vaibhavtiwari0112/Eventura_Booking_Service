@@ -1,3 +1,8 @@
+# ============================================================
+#  Eventura Booking Service — LOCAL DEVELOPMENT PROFILE
+#  Usage: mvn clean spring-boot:run -Dspring-boot.run.profiles=local
+# ============================================================
+
 server:
   port: ${SERVER_PORT:8082}
 
@@ -5,26 +10,43 @@ spring:
   application:
     name: eventura-booking
 
-  data:
-    redis:
-      url: ${REDIS_URL:redis://default:EFw4lxHrGHaipf9H96w4DO37LKNtCSiT@redis-15991.c264.ap-south-1-1.ec2.redns.redis-cloud.com:15991}
-
+  # ── Database ───────────────────────────────────────────────
   datasource:
     url: ${JDBC_DATABASE_URL:jdbc:postgresql://ep-twilight-scene-adaieni4-pooler.c-2.us-east-1.aws.neon.tech:5432/neondb?sslmode=require&channel_binding=require}
     username: ${JDBC_DATABASE_USERNAME:neondb_owner}
     password: ${JDBC_DATABASE_PASSWORD:npg_8mg7TPQqFrAy}
     driver-class-name: org.postgresql.Driver
-
+    # --- Option B: Local PostgreSQL (uncomment to use) --------
+    # url: jdbc:postgresql://localhost:5432/eventura_booking_local
+    # username: postgres
+    # password: postgres
+    # driver-class-name: org.postgresql.Driver
 
   jpa:
     hibernate:
-      ddl-auto: update   # ✅ for dev; in prod use validate/none
+      ddl-auto: update
     show-sql: true
     properties:
       hibernate:
         format_sql: true
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
+  # ── Redis ──────────────────────────────────────────────────
+  data:
+    redis:
+      # --- Option A: Cloud Redis ---
+      url: redis://default:EFw4lxHrGHaipf9H96w4DO37LKNtCSiT@redis-15991.c264.ap-south-1-1.ec2.redns.redis-cloud.com:15991
+      lettuce:
+        pool:
+          max-active: 8        # max simultaneous connections
+          max-idle: 4          # keep 4 connections warm
+          min-idle: 2          # never drop below 2 idle connections
+          max-wait: 2000ms     # wait up to 2s for a connection before failing
+        shutdown-timeout: 200ms
+      # ✅ Reconnect automatically on connection reset
+      connect-timeout: 3000ms
+
+  # ── Kafka ──────────────────────────────────────────────────
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
     consumer:
@@ -33,13 +55,34 @@ spring:
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
         spring.json.trusted.packages: '*'
+        allow.auto.create.topics: 'true'
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    listener:
+      missing-topics-fatal: false
 
-  rabbitmq:
-    addresses: amqps://tdoxvmdr:XwrZ9FOHTabNTH3qTTgBHALqE2sReRRW@puffin.rmq2.cloudamqp.com/tdoxvmdr
+  # ── RabbitMQ ───────────────────────────────────────────────
+  # ✅ Correct: exactly 2 spaces under 'spring:'
+  spring:
+    rabbitmq:
+      host: ${RABBITMQ_HOST:puffin.rmq2.cloudamqp.com}
+      port: ${RABBITMQ_PORT:5671}
+      username: ${RABBITMQ_USERNAME:veddbeja}
+      password: ${RABBITMQ_PASSWORD:tI62m4seODQ-uk2DPYkOH82UOWjqpPyy}
+      virtual-host: ${RABBITMQ_VHOST:veddbeja}
+      ssl:
+        enabled: true
+    # --- Local RabbitMQ (uncomment to use) --------------------
+    # host: localhost
+    # port: 5672
+    # username: guest
+    # password: guest
+    # virtual-host: /
+    # ssl:
+    #   enabled: false
 
+# ── RabbitMQ routing ───────────────────────────────────────
 rabbitmq:
   exchange: booking.exchange
   booking:
@@ -47,11 +90,13 @@ rabbitmq:
   notification:
     routing-key: notification.event
 
+# ── Eventura settings ──────────────────────────────────────
 eventura:
   booking:
-    seat-lock-ttl-seconds: ${EVENTURA_BOOKING_SEAT_LOCK_TTL_SECONDS:120}
-    pending-timeout-seconds: ${EVENTURA_BOOKING_PENDING_TIMEOUT_SECONDS:150}
+    seat-lock-ttl-seconds: 120
+    pending-timeout-seconds: 150
 
+# ── Actuator ───────────────────────────────────────────────
 management:
   endpoints:
     web:
@@ -61,8 +106,15 @@ management:
     prometheus:
       enabled: true
 
+# ── Downstream services ────────────────────────────────────
 services:
   show:
     base-url: https://show-service.onrender.com
   catalog:
     base-url: https://catalog-service-wvzz.onrender.com
+
+# ── Logging ────────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.eventura: DEBUG

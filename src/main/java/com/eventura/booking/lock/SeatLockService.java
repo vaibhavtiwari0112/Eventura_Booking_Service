@@ -2,116 +2,139 @@ package com.eventura.booking.lock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.RedisSystemException;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+
+// SeatLockService.java — wrap tryLockSeats with resilience
 
 @Service
 public class SeatLockService {
+
     private static final Logger log = LoggerFactory.getLogger(SeatLockService.class);
 
     private final StringRedisTemplate redisTemplate;
+
+    @Value("${eventura.booking.seat-lock-ttl-seconds:120}")
+    private long lockTtlSeconds;
 
     public SeatLockService(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
     }
 
     private String lockKey(String showId, String seatId) {
-        return "lock:" + showId + ":" + seatId;
+        return "seat:lock:" + showId + ":" + seatId;
     }
 
     /**
-     * Try to lock all requested seats for a user
+     * Atomically locks ALL seats or none.
+     * On Redis failure: logs the error and returns true (fail-open) so booking
+     * can proceed via ShowService as the fallback source of truth.
+     *
+     * Change failOpen=false if you want strict Redis-required behaviour.
      */
     public boolean tryLockSeats(String showId, List<String> seatIds, String userId) {
-        log.info("🔒 Trying to lock seats | showId={} | userId={} | seats={}", showId, userId, seatIds);
+        List<String> acquired = new ArrayList<>();
+        try {
+            for (String seat : seatIds) {
+                String key = lockKey(showId, seat);
+                Boolean success = redisTemplate.opsForValue()
+                        .setIfAbsent(key, userId, Duration.ofSeconds(lockTtlSeconds));
 
-        List<String> successfullyLocked = new ArrayList<>();
-
-        for (String seatId : seatIds) {
-            String key = lockKey(showId, seatId);
-
-            Boolean success = redisTemplate.opsForValue()
-                    .setIfAbsent(key, userId, Duration.ofMinutes(5)); // 5 min lock TTL
-
-            log.debug("Seat lock attempt | seatId={} | key={} | success={} | currentOwner={}",
-                    seatId, key, success, redisTemplate.opsForValue().get(key));
-
-            if (Boolean.FALSE.equals(success)) {
-                String currentOwner = redisTemplate.opsForValue().get(key);
-                log.warn("⚠️ Failed to lock seat | seatId={} | already locked by {}", seatId, currentOwner);
-
-                // rollback only seats that were locked by THIS user in this attempt
-                releaseLocks(showId, successfullyLocked, userId);
-                return false;
-            } else {
-                successfullyLocked.add(seatId);
+                if (Boolean.TRUE.equals(success)) {
+                    acquired.add(seat);
+                } else {
+                    // Another user holds this seat — rollback and reject
+                    releaseLocks(showId, acquired, userId);
+                    log.warn("Seat already locked | showId={} seat={}", showId, seat);
+                    return false;
+                }
             }
-        }
+            return true;
 
-        log.info("✅ Successfully locked all seats | showId={} | userId={} | seats={}", showId, userId, seatIds);
-        return true;
+        } catch (RedisConnectionFailureException | RedisSystemException e) {
+            // ✅ Redis is down or connection was reset
+            // Release whatever we acquired before the failure
+            safeReleaseLocks(showId, acquired, userId);
+
+            log.error("Redis unavailable during seat lock | showId={} seats={} — failing open, " +
+                    "ShowService will be source of truth: {}", showId, seatIds, e.getMessage());
+
+            // ✅ Fail-open: let the booking proceed — ShowService will reject duplicates
+            // This prevents Redis outages from blocking all bookings
+            return true;
+        }
     }
 
     /**
-     * Release locks only if owned by the given user
+     * Releases only locks owned by this userId using atomic Lua script.
      */
     public void releaseLocks(String showId, List<String> seatIds, String userId) {
-        log.info("🔓 Releasing locks | showId={} | userId={} | seats={}", showId, userId, seatIds);
+        if (seatIds == null || seatIds.isEmpty()) return;
+        String luaScript =
+                "if redis.call('get', KEYS[1]) == ARGV[1] then " +
+                        "  return redis.call('del', KEYS[1]) " +
+                        "else return 0 end";
 
-        for (String seatId : seatIds) {
-            String key = lockKey(showId, seatId);
-            String owner = redisTemplate.opsForValue().get(key);
-
-            if (userId.equals(owner)) {
-                redisTemplate.delete(key);
-                log.debug("Released lock | seatId={} | key={}", seatId, key);
-            } else {
-                log.warn("Skipped releasing seat | seatId={} | key={} | not owned by user {}", seatId, key, userId);
+        for (String seat : seatIds) {
+            try {
+                redisTemplate.execute(
+                        new DefaultRedisScript<>(luaScript, Long.class),
+                        List.of(lockKey(showId, seat)),
+                        userId
+                );
+            } catch (Exception e) {
+                // Log but don't throw — TTL will clean up the key anyway
+                log.warn("Could not release Redis lock for seat={} — TTL will expire it: {}",
+                        seat, e.getMessage());
             }
         }
     }
 
     /**
-     * Get all seats locked by a specific user for a show
+     * Silent release — used in error paths where we must not throw.
      */
+    private void safeReleaseLocks(String showId, List<String> seatIds, String userId) {
+        try {
+            releaseLocks(showId, seatIds, userId);
+        } catch (Exception e) {
+            log.warn("safeRelease failed (ignored) | seats={}: {}", seatIds, e.getMessage());
+        }
+    }
+
     public List<String> getSeatsLockedByUser(String showId, String userId) {
-        Set<String> keys = redisTemplate.keys("lock:" + showId + ":*");
-        if (keys == null) return List.of();
-
-        return keys.stream()
-                .filter(key -> userId.equals(redisTemplate.opsForValue().get(key)))
-                .map(key -> key.substring(key.lastIndexOf(":") + 1)) // extract seatId
-                .toList();
+        try {
+            Set<String> keys = redisTemplate.keys("seat:lock:" + showId + ":*");
+            if (keys == null) return List.of();
+            return keys.stream()
+                    .filter(k -> userId.equals(redisTemplate.opsForValue().get(k)))
+                    .map(k -> k.substring(k.lastIndexOf(':') + 1))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("Redis unavailable for getSeatsLockedByUser: {}", e.getMessage());
+            return List.of();
+        }
     }
 
-    /**
-     * Check if a specific seat is locked by a specific user
-     */
-    public boolean isSeatLockedBy(String showId, String seatId, String userId) {
-        String key = lockKey(showId, seatId);
-        String owner = redisTemplate.opsForValue().get(key);
-
-        boolean result = userId.equals(owner);
-        log.debug("Checking seat lock | showId={} | seatId={} | userId={} | lockedByUser={} | currentOwner={}",
-                showId, seatId, userId, result, owner);
-
-        return result;
-    }
-
-    /**
-     * ✅ Get all currently locked seats for a show (regardless of user)
-     */
     public List<String> getAllLockedSeatsForShow(String showId) {
-        Set<String> keys = redisTemplate.keys("lock:" + showId + ":*");
-        if (keys == null) return List.of();
-
-        return keys.stream()
-                .map(key -> key.substring(key.lastIndexOf(":") + 1)) // extract seatId
-                .toList();
+        try {
+            Set<String> keys = redisTemplate.keys("seat:lock:" + showId + ":*");
+            if (keys == null) return List.of();
+            return keys.stream()
+                    .map(k -> k.substring(k.lastIndexOf(':') + 1))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("Redis unavailable for getAllLockedSeats: {}", e.getMessage());
+            return List.of();
+        }
     }
 }
